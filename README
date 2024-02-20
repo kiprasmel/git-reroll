@@ -1,0 +1,9 @@
+git-reroll
+==========
+
+proper versioning for the email patch submission workflow.
+
+license
+-------
+
+GPL-2.0-only (same as git)

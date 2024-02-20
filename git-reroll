@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+
+set -o pipefail
+
+# proper versioning for the email patch submission workflow.
+# GPL-2.0-only license (same as git)
+
+# originally from:
+# https://github.com/ttaylorr/dotfiles/blob/1f67d9dac0ed1563b7597746c212814578a9ed7d/bin/git-reroll
+
+# what you by default rebase onto.
+# needed until i figure out ~~git-parent~~ auto-recording of newbase in git.
+GIT_REROLL_DEFAULT_NEWBASE="${GIT_REROLL_DEFAULT_NEWBASE:-upstream/master}"
+
+git_reroll() {
+	case "$1" in
+		-c|--create)          shift; git_reroll__create      "$@"; ;;
+		-p|--push)            shift; git_reroll__push        "$@"; ;;
+		-l|--list)            shift; git_reroll__list        "$@"; ;;
+		-L|--last)            shift; git_reroll__last_tag    "$@"; ;;
+		-d|--drop)            shift; git_reroll__drop        "$@"; ;;
+		--next)               shift; git_reroll__next_count  "$@"; ;;
+		-r|--rd|--range-diff) shift; git_reroll__range_diff  "$@"; ;;
+		"")                          git_reroll__list        "$@"; ;;
+		*)
+			printf "unknown opt '%s'\n" "$1"
+			return 1
+		;;
+	esac
+}
+
+git_reroll__create() {
+	topic="$(git_reroll__topic_name "$@")"
+	count="$(git_reroll__next_count "$@")"
+	committish="${2:-HEAD}"
+
+	git tag "${topic}.v${count}" "${committish}"
+	git_reroll__last
+}
+
+git_reroll__topic_name() {
+	git rev-parse --symbolic-full-name "${1:-HEAD}" \
+		| sed -e 's,^refs/heads/,,'
+}
+
+git_reroll__next_count() {
+	git_reroll__last_tag \
+		| grep -o "[[:digit:]]*$" \
+		| awk '{ print $0 + 1 }' \
+		|| printf "1\n"
+}
+
+git_reroll__last() {
+	git_reroll__list | tail -1
+}
+git_reroll__last_tag() {
+	git_reroll__last | cut -d' ' -f1
+}
+
+git_reroll__list() {
+	tip="$(git_reroll__topic_name "$@")"
+	head="$(git rev-parse HEAD)"
+	has_any=0
+
+	while read -r tag sha; do
+		has_any=1
+
+		extra_info=""
+		test "$sha" = "$head" && extra_info="$extra_info=HEAD"
+
+		# intentionally wrap objectname with '()'
+		# to avoid accidently usable by git (e.g extra arg for range-diff).
+		# for using w/ git, always use the refname (tag).
+		printf "%s (%s) %s\n" "$tag" "$sha" "$extra_info"
+	done \
+		< <(git for-each-ref --format='%(refname:short) %(objectname)' "refs/tags/$tip.v*")
+
+	test $has_any -eq 0 && return 1
+	return 0
+}
+
+git_reroll__push() {
+	list="$(git_reroll__list | cut -d' ' -f1)" \
+		|| git_reroll__die_has_none
+
+	remote=origin
+	case "$1" in
+		-*) ;; # forward options
+		*) if test -n "$1";
+			then remote="$1"
+			shift
+			# BUG: shift: won't apply to actual argv.
+			# tho here doesn't matter since nobody else uses it after.
+		fi ;;
+	esac
+
+	(
+		trap 'kill 0' SIGINT
+		# shellcheck disable=2086 # no quote to expand all tags as separate args
+		git push    "$remote"  $list &
+		git push -f "$remote" "$(git_reroll__topic_name)" &
+		wait
+	)
+}
+
+git_reroll__die_has_none() {
+	>&2 printf "no rerolls yet.\n"
+	exit 1
+}
+
+git_reroll__drop() {
+	git_reroll__last "$@" \
+		| sed -e 's,refs/tags/,,' \
+		| awk '{ print $1 }' \
+		| xargs git tag -d \
+		|| git_reroll__die_has_none
+}
+
+git_reroll__range_diff() {
+	last="$(git_reroll__last_tag)" \
+		|| return 1
+
+	newbase="$GIT_REROLL_DEFAULT_NEWBASE"
+	case "$1" in
+		-*) ;; # forward options
+		*)
+			if test -n "$1"; then
+				newbase="$1"
+				shift
+			fi
+		;;
+	esac
+
+	# assumes everything from last tag until previous base.
+	# assumes that previous base is part of new base.
+	#
+	# takes commits from last tag,
+	# and cuts off anything reachable from HEAD,
+	# i.e. from last tag up until previous base.
+	#
+	range1="HEAD..$last"
+
+	# simple. as long as $newbase is right..
+	range2="$newbase..HEAD"
+
+	git range-diff "$range1" "$range2" "$@"
+}
+
+# don't run if sourced
+test "$0" = "${BASH_SOURCE[0]}" && git_reroll "$@"
