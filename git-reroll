@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -o pipefail
+set -uo pipefail
 
 # proper versioning for the email patch submission workflow.
 # GPL-2.0-only license (same as git)
@@ -13,6 +13,11 @@ set -o pipefail
 GIT_REROLL_DEFAULT_NEWBASE="${GIT_REROLL_DEFAULT_NEWBASE:-upstream/master}"
 
 git_reroll() {
+	test $# -eq 0 && {
+		git_reroll__list
+		return 0
+	}
+
 	case "$1" in
 		-c|--create)          shift; git_reroll__create      "$@"; ;;
 		-p|--push)            shift; git_reroll__push        "$@"; ;;
@@ -22,7 +27,6 @@ git_reroll() {
 		--next)               shift; git_reroll__next_count  "$@"; ;;
 		-r|--rd|--range-diff) shift; git_reroll__range_diff  "$@"; ;;
 		-f|--fmt|--format)    shift; git_reroll__format_patch "$@"; ;;
-		"")                          git_reroll__list        "$@"; ;;
 		*)
 			printf "unknown opt '%s'\n" "$1"
 			return 1
@@ -85,6 +89,8 @@ git_reroll__push() {
 		|| git_reroll__die_has_none
 
 	remote=origin
+
+	set +u
 	case "$1" in
 		-*) ;; # forward options
 		*) if test -n "$1";
@@ -94,6 +100,7 @@ git_reroll__push() {
 			# tho here doesn't matter since nobody else uses it after.
 		fi ;;
 	esac
+	set -u
 
 	(
 		trap 'kill 0' SIGINT
@@ -124,6 +131,7 @@ git_reroll__get_ranges() {
 	newbase1="$GIT_REROLL_DEFAULT_NEWBASE"
 
 	shifted_argv=0
+	set +u
 	case "$1" in
 		-*) ;; # forward options
 		*) if test -n "$1"; then
@@ -133,6 +141,7 @@ git_reroll__get_ranges() {
 		fi
 		;;
 	esac
+	set -u
 
 	newbase2="$(git rev-parse "$newbase1" 2>/dev/null)" || {
 		# does not exist
