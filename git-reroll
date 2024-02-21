@@ -21,6 +21,7 @@ git_reroll() {
 		-d|--drop)            shift; git_reroll__drop        "$@"; ;;
 		--next)               shift; git_reroll__next_count  "$@"; ;;
 		-r|--rd|--range-diff) shift; git_reroll__range_diff  "$@"; ;;
+		-f|--fmt|--format)    shift; git_reroll__format_patch "$@"; ;;
 		"")                          git_reroll__list        "$@"; ;;
 		*)
 			printf "unknown opt '%s'\n" "$1"
@@ -116,34 +117,143 @@ git_reroll__drop() {
 		|| git_reroll__die_has_none
 }
 
-git_reroll__range_diff() {
+git_reroll__get_ranges() {
 	last="$(git_reroll__last_tag)" \
 		|| return 1
 
-	newbase="$GIT_REROLL_DEFAULT_NEWBASE"
+	newbase1="$GIT_REROLL_DEFAULT_NEWBASE"
+
+	shifted_argv=0
 	case "$1" in
 		-*) ;; # forward options
-		*)
-			if test -n "$1"; then
-				newbase="$1"
-				shift
-			fi
+		*) if test -n "$1"; then
+			newbase1="$1"
+			shifted_argv=1
+			shift;
+		fi
 		;;
 	esac
 
-	# assumes everything from last tag until previous base.
-	# assumes that previous base is part of new base.
-	#
-	# takes commits from last tag,
-	# and cuts off anything reachable from HEAD,
-	# i.e. from last tag up until previous base.
-	#
-	range1="HEAD..$last"
+	newbase2="$(git rev-parse "$newbase1" 2>/dev/null)" || {
+		# does not exist
 
-	# simple. as long as $newbase is right..
-	range2="$newbase..HEAD"
+		prefix1="Default"
+		prefix2="change default or provide"
+		test "$newbase1" != "$GIT_REROLL_DEFAULT_NEWBASE" && {
+			prefix1="Provided"
+			prefix2="try"
+		}
 
-	git range-diff "$range1" "$range2" "$@"
+		>&2 printf "%s newbase (%s) does not exist, %s a different one.\n" "$prefix1" "$newbase1" "$prefix2"
+		return 1
+	}
+
+	# safety check:
+	# e.g. if you rebased onto origin/master,
+	# but default base is upstream/master,
+	# and upstream is more up-to-date,
+	# then will find the correct (earlier) base instead.
+	newbase3="$(git merge-base "$newbase2" HEAD)"
+
+	did_we_adjust_newbase=""
+	if test "$newbase3" != "$newbase2"; then
+		did_we_adjust_newbase="(newbase adjusted to earlier)"
+
+		adjusted_newbase_branch="$(git_reroll__try_get_branchname_at "$newbase3")" \
+			&& newbase3="$adjusted_newbase_branch"
+	fi
+
+	# --octopus and including "$newbase" because:
+	#
+	# $last..HEAD would be fine if $newbase changed.
+	# i.e., range1 would include all commits of the then-branch,
+	# and range2 would include all commits of the new branch.
+	#
+	# but if $newbase didn't change,
+	# then merge-base $last HEAD could be earlier than $newbase,
+	# in which case there would be fewer commits in $MB..$last
+	# than it will be in $newbase..HEAD.
+	#
+	#
+	# now just need to find a way to automatically
+	# infer $newbase and we're golden.
+	#
+	#
+	# TODO: why cannot use --forkpoint together w/ --octopus?
+	# should we MB=$(git merge-base --forkpoint $MB $last)?
+	#
+	MB="$(git merge-base --octopus "$last" "HEAD" "$newbase3")"
+
+	oldbase="$MB"
+	old="$last"
+	#newbase="$newbase"
+	new="HEAD"
+
+	adjusted_oldbase_branch="$(git_reroll__try_get_branchname_at "$oldbase")" \
+		&& oldbase="$adjusted_oldbase_branch"
+
+	printf "%s %s %s %s %s %s\n" "$oldbase" "$old" "$newbase3" "$new" "$shifted_argv" "$did_we_adjust_newbase"
+}
+
+git_reroll__range_diff() {
+	git_reroll__safeguard || return 1
+
+	{ git_reroll__get_ranges "$@" || return 1; } \
+	| while IFS=' ' read -r oldbase old newbase new shifted_argv did_we_adjust_newbase; do
+		test "$shifted_argv" -ne 0 && shift
+
+		range1="$oldbase..$old"
+		range2="$newbase..$new"
+
+		git range-diff "$range1" "$range2" "$@"
+		>&2 printf "%s  %s  %s\n\n" "$range1" "$range2" "$did_we_adjust_newbase"
+	done
+}
+
+git_reroll__format_patch() {
+	git_reroll__safeguard || return 1
+
+	{ git_reroll__get_ranges "$@" || return 1; } \
+	| while IFS=' ' read -r oldbase old newbase new shifted_argv did_we_adjust_newbase; do
+		test "$shifted_argv" -ne 0 && shift
+
+		range1="$oldbase..$old"
+		range2="$newbase..$new"
+
+		>&2 git range-diff "$range1" "$range2"
+		>&2 printf "%s  %s  %s\n\n" "$range1" "$range2" "$did_we_adjust_newbase"
+
+		next_version="$(git_reroll__next_count)"
+		git format-patch --base="$newbase" -v"$next_version" --range-diff="$range1" "$range2" "$@"
+	done
+}
+
+git_reroll__safeguard() {
+	head="$(git rev-parse HEAD)"
+	last_tag="$(git_reroll__last_tag)" || git_reroll__die_has_none
+	last="$(git rev-parse "$last_tag")"
+
+	#if test "$head_ref" != "$last_ref"; then
+		# impossible since reroll only gives tags for the current branch
+	if test "$head" = "$last"; then
+		>&2 printf "REROLL: SHAs identical\n"
+		return 1
+	else
+		git diff --exit-code --numstat "$head" "$last" >/dev/null
+		ret=$?
+		if test $ret -eq 0; then
+			>&2 printf "REROLL: no diff\n"
+			return 1
+		fi
+	fi
+	return 0
+}
+
+git_reroll__try_get_branchname_at() {
+	branches="$(git branch -a --points-at "$1" --format='%(refname:short)')" || return 1
+	test -z "$branches" && return 1
+	test "$(wc -l <<< "$branches")" -eq 1 || return 1
+	printf "%s" "$(printf "%s" "$branches" | head -n1)"
 }
 
 # don't run if sourced
