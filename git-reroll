@@ -19,14 +19,14 @@ git_reroll() {
 	}
 
 	case "$1" in
-		-c|--create)          shift; git_reroll__create      "$@"; ;;
-		-p|--push)            shift; git_reroll__push        "$@"; ;;
-		-l|--list)            shift; git_reroll__list        "$@"; ;;
-		-L|--last)            shift; git_reroll__last_tag    "$@"; ;;
-		-d|--drop)            shift; git_reroll__drop        "$@"; ;;
-		--next)               shift; git_reroll__next_count  "$@"; ;;
-		-r|--rd|--range-diff) shift; git_reroll__range_diff  "$@"; ;;
-		-f|--fmt|--format)    shift; git_reroll__format_patch "$@"; ;;
+		-c|-create|--create)      shift; git_reroll__create      "$@"; ;;
+		-p|-push|--push)          shift; git_reroll__push        "$@"; ;;
+		-l|-list|--list)          shift; git_reroll__list        "$@"; ;;
+		-L|-last|--last)          shift; git_reroll__last_tag    "$@"; ;;
+		-d|-drop|--drop)          shift; git_reroll__drop        "$@"; ;;
+		-next|--next)             shift; git_reroll__next_count  "$@"; ;;
+		-r|-rd|--rd|--range-diff) shift; git_reroll__range_diff  "$@"; ;;
+		-f|-fmt|--fmt|--format)   shift; git_reroll__format_patch "$@"; ;;
 		*)
 			printf "unknown opt '%s'\n" "$1"
 			return 1
